@@ -2,9 +2,10 @@ package main
 
 import (
 	"bufio"
-	"io"
 	"log"
 	"net"
+	"os"
+
 	"strings"
 	"sync"
 )
@@ -17,24 +18,40 @@ type endpoint struct {
 	m        sync.RWMutex
 }
 
-const (
-	port = ":61000"
+// Exported global variables used for mocking values in unit tests
+var (
+	// Port is the port number the hub will listen on
+	Port string
+
+	// TestMode is env var that can be set to "on" it is used by unit tests
+	TestMode string
 )
 
+func (e *endpoint) listen(port string) error {
 
-func (e *endpoint) listen() error {
+	// This function is test mode aware
+	TestMode = os.Getenv("TEST_MODE")
+
 	var err error
 	e.listener, err = net.Listen("tcp", port)
 	if err != nil {
 		return err
 	}
+
 	log.Println("Listening on", e.listener.Addr().String())
+
+	// Test mode returns after checking listening is ok
+	if TestMode == "on" {
+		return nil
+	}
+
 	for {
 		conn, err := e.listener.Accept()
 		if err != nil {
 			log.Println("Failed to accept a connection request:", err)
 			continue
 		}
+
 		go e.handleMessages(conn)
 	}
 }
@@ -42,32 +59,40 @@ func (e *endpoint) listen() error {
 func (e *endpoint) handleMessages(conn net.Conn) {
 
 	rw := bufio.NewReadWriter(bufio.NewReader(conn), bufio.NewWriter(conn))
-	defer conn.Close()
 
-	for {
+	e.routeMessage(rw)
+}
 
-		msgType, err := rw.ReadString('\n')
-		switch {
-		case err == io.EOF:
-			log.Println("Reached EOF - closing connection.\n   ---")
-			return
-		case err != nil:
-			log.Println("\nError reading command. Got: '"+msgType+"'\n", err)
-			return
-		}
+func (e *endpoint) routeMessage(rw *bufio.ReadWriter) {
 
-		msgType = strings.Trim(msgType, "\n ")
-		log.Printf("Received message type %s\n", msgType)
+	// This function is test mode aware
+	TestMode = os.Getenv("TEST_MODE")
 
-		e.m.RLock()
-		handleCommand, ok := e.handler[msgType]
-		e.m.RUnlock()
-		if !ok {
-			log.Println("Message Type '" + msgType + "' is not recognised.")
-			return
-		}
-		handleCommand(rw)
+	msgType, err := rw.ReadString('\n')
+
+	switch {
+	case err != nil:
+		log.Println("\nError reading message type. Got: '"+msgType+"'\n", err)
+		return
 	}
+
+	msgType = strings.Trim(msgType, "\n ")
+	log.Printf("Received message type %s\n", msgType)
+
+	e.m.RLock()
+	handleCommand, ok := e.handler[msgType]
+	e.m.RUnlock()
+	if !ok {
+		log.Println("Message Type '" + msgType + "' is not recognised.")
+		return
+	}
+
+	// only handle commands outside of test mode
+	if TestMode != "on" {
+		handleCommand(rw)
+		return
+	}
+
 }
 
 func main() {
@@ -111,7 +136,9 @@ func handleIdentityMessage(rw *bufio.ReadWriter) {
 
 func startHub() error {
 
+	Port = ":61000"
+
 	endpoint := newEndpoint()
 
-	return endpoint.listen()
+	return endpoint.listen(Port)
 }

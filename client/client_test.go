@@ -1,33 +1,117 @@
 package main
 
 import (
-	//"fmt"
-	//"testing"
+	"bufio"
+	"bytes"
+	"errors"
+	"flag"
+	"os"
+	"testing"
 
-	//"github.com/stretchr/testify/assert"
+	"github.com/Rosalita/tcp_message/mockhub"
+	"github.com/stretchr/testify/assert"
 )
 
-//func TestOpenConnection(t *testing.T) {
+func TestMain(m *testing.M) {
 
-	// tests := []struct {
-	// 	address string
-		//	connection *bufio.ReadWriter
-	// 	err error
-	// }{
-	// 	{"localhost", nil},
-	// }
+	flag.Parse()
+	// Test setup
 
-	// for _, test := range tests {
+	// Create a hub for these client tests to interact with
+	createHubForTests()
 
-		// to do:
-		// test needs something to connect to
-		// make the test create a test hub?
+	// Run tests
+	exitCode := m.Run()
 
-		// result, err := openConnection(test.address)
-		// assert.Equal(t, test.err, err)
+	// Test teardown
+	os.Exit(exitCode)
+}
 
-		// fmt.Println(result)
+func createHubForTests() {
+	Port = ":61000"
+	endpoint := mockhub.NewEndpoint()
+	go endpoint.Listen(Port)
 
-	//}
+}
 
-//}
+func TestOpenConnection(t *testing.T) {
+
+	validAddress := "localhost:61000"
+	missingPort := "localhost"
+	badPort := "localhost:1"
+
+	tests := []struct {
+		address string
+		errMsg  string
+	}{
+		{validAddress, ""},
+		{missingPort, "dial tcp: address localhost: missing port in address"},
+		{badPort, "dial tcp 127.0.0.1:1: connect: connection refused"},
+	}
+
+	for _, test := range tests {
+
+		_, err := openConnection(test.address)
+
+		if test.errMsg == "" {
+			assert.Nil(t, err)
+		} else {
+			assert.Equal(t, test.errMsg, err.Error())
+		}
+	}
+}
+
+func TestSendMessageToHub(t *testing.T) {
+
+	var buffer bytes.Buffer
+	rw := bufio.NewReadWriter(bufio.NewReader(&buffer), bufio.NewWriter(&buffer))
+
+	tests := []struct {
+		msgType  string
+		msg      string
+		expected string
+	}{
+		{"HELLO", "WORLD", "HELLO\nWORLD\n"},
+		{"", "", "\n\n"},
+	}
+
+	for _, test := range tests {
+		sendMessageToHub(rw, test.msgType, test.msg)
+		result := buffer.String()
+		assert.Equal(t, test.expected, result)
+		buffer.Reset()
+	}
+}
+
+func TestReadResponseFromHub(t *testing.T) {
+
+	var buffer bytes.Buffer
+	rw := bufio.NewReadWriter(bufio.NewReader(&buffer), bufio.NewWriter(&buffer))
+
+	validResponse := "This is a valid response from hub \n"
+	missingNewLine := "This response doesn't end in a new line"
+	blankResponse := ""
+
+	tests := []struct {
+		hubResponse string
+		err         error
+		expected    string
+	}{
+		{validResponse, nil, "This is a valid response from hub \n"},
+		{missingNewLine, errors.New("EOF"), ""},
+		{blankResponse, errors.New("EOF"), ""},
+	}
+
+	for _, test := range tests {
+
+		rw.WriteString(test.hubResponse)
+		rw.Flush()
+
+		result, err := readResponseFromHub(rw)
+
+		assert.Equal(t, test.expected, result)
+		assert.Equal(t, test.err, err)
+
+		buffer.Reset()
+	}
+}

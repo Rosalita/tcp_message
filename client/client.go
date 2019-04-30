@@ -3,40 +3,59 @@ package main
 import (
 	"bufio"
 	"flag"
+	"fmt"
 	"log"
 	"net"
 )
 
-func main() {
-
-	msgType := flag.String("msgType", "", "The message type to send, IDENTITY, LIST or RELAY.")
-	flag.Parse()
-
-	err := startClient("localhost", *msgType)
-	if err != nil {
-		log.Println("Error:", err)
-	}
-	log.Println("Client done.")
-	return
-
-}
-
-const (
-	port = ":61000"
+// Exported global variables used for mocking values in unit tests
+var (
+	// Port is the port number the hub will listen on
+	Port string
 )
 
-func startClient(ip, messageType string) error {
+func startClient(ip, cmd string) error {
 
-	rw, err := openConnection(ip + port)
+	messageSent := false
+
+	rw, err := openConnection(ip + Port)
 	if err != nil {
 		return err
 	}
 
-	_, err = rw.WriteString(messageType + "\n")
+	for {
+
+		if messageSent == false {
+			err = sendMessageToHub(rw, cmd, "Hello hub")
+
+			_, err := readResponseFromHub(rw)
+			if err != nil {
+				return err
+			}
+
+			messageSent = true
+		}
+
+	}
+}
+
+func openConnection(address string) (*bufio.ReadWriter, error) {
+	log.Println("Connecting to hub " + address)
+	conn, err := net.Dial("tcp", address)
+	if err != nil {
+		fmt.Println(err)
+		return nil, err
+	}
+	return bufio.NewReadWriter(bufio.NewReader(conn), bufio.NewWriter(conn)), nil
+}
+
+func sendMessageToHub(rw *bufio.ReadWriter, msgType, msg string) error {
+
+	_, err := rw.WriteString(msgType + "\n")
 	if err != nil {
 		return err
 	}
-	_, err = rw.WriteString("Additional data.\n")
+	_, err = rw.WriteString(msg + "\n")
 	if err != nil {
 		return err
 	}
@@ -47,21 +66,31 @@ func startClient(ip, messageType string) error {
 		return err
 	}
 
-	response, err := rw.ReadString('\n')
-	if err != nil {
-		return err
-	}
-
-	log.Println("reply from hub:", response)
-
 	return nil
 }
 
-func openConnection(address string) (*bufio.ReadWriter, error) {
-	log.Println("Connecting to hub " + address)
-	conn, err := net.Dial("tcp", address)
+func readResponseFromHub(rw *bufio.ReadWriter) (string, error) {
+	response, err := rw.ReadString('\n')
 	if err != nil {
-		return nil, err
+		return "", err
 	}
-	return bufio.NewReadWriter(bufio.NewReader(conn), bufio.NewWriter(conn)), nil
+
+	log.Println("response from hub:", response)
+	return response, nil
+}
+
+func main() {
+
+	Port = ":61000"
+
+	cmd := flag.String("cmd", "", "The command client will perform, IDENTITY, LIST or RELAY.")
+	flag.Parse()
+
+	err := startClient("localhost", *cmd)
+	if err != nil {
+		log.Println("Error:", err)
+	}
+	log.Println("Client done.")
+	return
+
 }
