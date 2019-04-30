@@ -24,16 +24,15 @@ func TestMain(m *testing.M) {
 	os.Exit(exitCode)
 }
 
-func TestCanCreateNewEndpoint(t *testing.T) {
+func TestNewEndpoint(t *testing.T) {
 
 	endpoint := newEndpoint()
 
 	assert.Nil(t, endpoint.listener)
-	assert.NotNil(t, endpoint.handler)
-	assert.NotNil(t, endpoint.handler["IDENTITY"])
+	assert.Equal(t, endpoint.nextID, uint64(1))
 }
 
-func TestHubCanListen(t *testing.T) {
+func TestListen(t *testing.T) {
 
 	SetTestMode()
 
@@ -66,13 +65,12 @@ func TestRouteMessage(t *testing.T) {
 	missingMessageType := ""
 
 	tests := []struct {
-		msgType     string
-		loggedLine1 string
-		loggedLine2 string
+		msgType string
+		logged  string
 	}{
-		{validMessageType, "Received message type IDENTITY", ""},
-		{unknownMessageType, "Received message type UNKNOWN", "Message Type 'UNKNOWN' is not recognised."},
-		{missingMessageType, "EOF", ""},
+		{validMessageType, "Received message type IDENTITY"},
+		{unknownMessageType, "Received message type UNKNOWN"},
+		{missingMessageType, "Error reading message type"},
 	}
 
 	for _, test := range tests {
@@ -80,15 +78,81 @@ func TestRouteMessage(t *testing.T) {
 		rw.Flush()
 
 		ep.routeMessage(rw)
-
-		assert.Contains(t, logged.String(), test.loggedLine1)
-		assert.Contains(t, logged.String(), test.loggedLine2)
-
+		assert.Contains(t, logged.String(), test.logged)
 		logged.Reset()
 
 	}
 
 	UnsetTestMode()
+}
+
+func TestHandleIdentity(t *testing.T) {
+
+	var buffer bytes.Buffer
+	rw := bufio.NewReadWriter(bufio.NewReader(&buffer), bufio.NewWriter(&buffer))
+
+	ep := newEndpoint()
+
+	ep.handleIdentity(rw)
+
+	assert.Equal(t, 1, len(ep.connectedUsers))
+	assert.Equal(t, uint64(1), ep.connectedUsers[0])
+	assert.Equal(t, uint64(2), ep.nextID)
+
+	result := buffer.String()
+	assert.Equal(t, "1\n", result)
+
+	buffer.Reset()
+	ep.handleIdentity(rw)
+
+	assert.Equal(t, 2, len(ep.connectedUsers))
+	assert.Equal(t, uint64(1), ep.connectedUsers[0])
+	assert.Equal(t, uint64(2), ep.connectedUsers[1])
+	assert.Equal(t, uint64(3), ep.nextID)
+
+	result = buffer.String()
+	assert.Equal(t, "2\n", result)
+
+}
+
+func TestHandleList(t *testing.T) {
+
+	var buffer bytes.Buffer
+	rw := bufio.NewReadWriter(bufio.NewReader(&buffer), bufio.NewWriter(&buffer))
+
+	ep := newEndpoint()
+	ep.handleList(rw)
+
+	result := buffer.String()
+	assert.Equal(t, "[]\n", result)
+
+	buffer.Reset()
+	ep.handleIdentity(rw)
+	buffer.Reset()
+	ep.handleList(rw)
+
+	result = buffer.String()
+	assert.Equal(t, "[1]\n", result)
+
+	buffer.Reset()
+	ep.handleIdentity(rw)
+	buffer.Reset()
+	ep.handleList(rw)
+
+	result = buffer.String()
+	assert.Equal(t, "[1 2]\n", result)
+}
+
+func TestHandleRelay(t *testing.T) {
+
+	var buffer bytes.Buffer
+	rw := bufio.NewReadWriter(bufio.NewReader(&buffer), bufio.NewWriter(&buffer))
+
+	ep := newEndpoint()
+	ep.handleRelay(rw)
+
+	result := buffer.String()
+	assert.Equal(t, "", result)
 
 }
 

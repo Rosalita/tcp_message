@@ -27,7 +27,6 @@ func (e *Endpoint) Listen(port string) error {
 	return nil
 }
 
-
 // NewEndpoint creates a new endpoint
 func NewEndpoint() *Endpoint {
 	return &Endpoint{}

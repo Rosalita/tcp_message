@@ -67,16 +67,19 @@ func TestSendMessageToHub(t *testing.T) {
 	rw := bufio.NewReadWriter(bufio.NewReader(&buffer), bufio.NewWriter(&buffer))
 
 	tests := []struct {
-		msgType  string
-		msg      string
+		cmd      string
+		m        string
+		to       string
 		expected string
 	}{
-		{"HELLO", "WORLD", "HELLO\nWORLD\n"},
-		{"", "", "\n\n"},
+		{"IDENTITY", "", "", "IDENTITY\n"},
+		{"LIST", "", "", "LIST\n"},
+		{"RELAY", "message", "1,2", "RELAY\nmessage\n1,2\n"},
+		{"", "", "", "\n"},
 	}
 
 	for _, test := range tests {
-		sendMessageToHub(rw, test.msgType, test.msg)
+		sendMessageToHub(rw, test.cmd, test.m, test.to)
 		result := buffer.String()
 		assert.Equal(t, test.expected, result)
 		buffer.Reset()

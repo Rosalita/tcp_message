@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"fmt"
 	"log"
 	"net"
 	"os"
@@ -13,9 +14,11 @@ import (
 type handlerFunc func(*bufio.ReadWriter)
 
 type endpoint struct {
-	listener net.Listener
-	handler  map[string]handlerFunc
-	m        sync.RWMutex
+	listener       net.Listener
+	handler        map[string]handlerFunc
+	connectedUsers []uint64
+	nextID         uint64
+	m              sync.RWMutex
 }
 
 // Exported global variables used for mocking values in unit tests
@@ -29,7 +32,6 @@ var (
 
 func (e *endpoint) listen(port string) error {
 
-	// This function is test mode aware
 	TestMode = os.Getenv("TEST_MODE")
 
 	var err error
@@ -40,7 +42,6 @@ func (e *endpoint) listen(port string) error {
 
 	log.Println("Listening on", e.listener.Addr().String())
 
-	// Test mode returns after checking listening is ok
 	if TestMode == "on" {
 		return nil
 	}
@@ -63,15 +64,66 @@ func (e *endpoint) handleMessages(conn net.Conn) {
 	e.routeMessage(rw)
 }
 
+func (e *endpoint) handleIdentity(rw *bufio.ReadWriter) {
+	log.Println("Handling identity message")
+
+	userID := e.nextID
+	e.connectedUsers = append(e.connectedUsers, userID)
+	e.nextID++
+
+	response := fmt.Sprintf("%d\n", userID)
+
+	_, err := rw.WriteString(response)
+	if err != nil {
+		log.Println("Cannot write to connection.\n", err)
+	}
+	err = rw.Flush()
+	if err != nil {
+		log.Println("Flush failed.", err)
+	}
+}
+
+func (e *endpoint) handleList(rw *bufio.ReadWriter) {
+	log.Println("Handling list message")
+
+	response := fmt.Sprintf("%d\n", e.connectedUsers)
+
+	_, err := rw.WriteString(response)
+	if err != nil {
+		log.Println("Cannot write to connection.\n", err)
+	}
+	err = rw.Flush()
+	if err != nil {
+		log.Println("Flush failed.", err)
+	}
+}
+
+func (e *endpoint) handleRelay(rw *bufio.ReadWriter) {
+	log.Println("Handling relay message")
+
+	m, err := rw.ReadString('\n')
+	if err != nil {
+		log.Println("Cannot read from connection.\n", err)
+	}
+	m = strings.Trim(m, "\n ")
+	log.Printf("message received from client: %s\n", m)
+
+	to, err := rw.ReadString('\n')
+	if err != nil {
+		log.Println("Cannot read from connection.\n", err)
+	}
+	to = strings.Trim(to, "\n ")
+	log.Printf("to IDs received from client: %s\n", to)
+
+}
+
 func (e *endpoint) routeMessage(rw *bufio.ReadWriter) {
 
-	// This function is test mode aware
 	TestMode = os.Getenv("TEST_MODE")
 
 	msgType, err := rw.ReadString('\n')
 
-	switch {
-	case err != nil:
+	if err != nil {
 		log.Println("\nError reading message type. Got: '"+msgType+"'\n", err)
 		return
 	}
@@ -79,19 +131,20 @@ func (e *endpoint) routeMessage(rw *bufio.ReadWriter) {
 	msgType = strings.Trim(msgType, "\n ")
 	log.Printf("Received message type %s\n", msgType)
 
-	e.m.RLock()
-	handleCommand, ok := e.handler[msgType]
-	e.m.RUnlock()
-	if !ok {
-		log.Println("Message Type '" + msgType + "' is not recognised.")
-		return
+	if TestMode != "on" {
+		switch msgType {
+		case "IDENTITY":
+			e.handleIdentity(rw)
+		case "LIST":
+			e.handleList(rw)
+		case "RELAY":
+			e.handleRelay(rw)
+		}
 	}
 
-	// only handle commands outside of test mode
-	if TestMode != "on" {
-		handleCommand(rw)
-		return
-	}
+	// e.m.RLock()
+	// handleCommand, ok := e.handler[msgType]
+	// e.m.RUnlock()
 
 }
 
@@ -107,30 +160,7 @@ func main() {
 
 func newEndpoint() *endpoint {
 	return &endpoint{
-		handler: map[string]handlerFunc{
-			"IDENTITY": handleIdentityMessage,
-		},
-	}
-}
-
-func handleIdentityMessage(rw *bufio.ReadWriter) {
-
-	log.Println("I'm handling an identity message")
-
-	s, err := rw.ReadString('\n')
-	if err != nil {
-		log.Println("Cannot read from connection.\n", err)
-	}
-	s = strings.Trim(s, "\n ")
-	log.Printf("data received from client: %s\n", s)
-
-	_, err = rw.WriteString("Thank you for connecting to me.\n")
-	if err != nil {
-		log.Println("Cannot write to connection.\n", err)
-	}
-	err = rw.Flush()
-	if err != nil {
-		log.Println("Flush failed.", err)
+		nextID: uint64(1),
 	}
 }
 
