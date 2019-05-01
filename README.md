@@ -37,18 +37,18 @@ Start client and immediately send a relay message
 
 ## Commands
 
-# Identity
+## Identity
 After sending an identity message, the hub will respond with the user_id of the connected user.
 
-# List
+## List
 After sending a list message, the hub will answer with the list of all connected client user_id’s (excluding the requesting client)
 
-# Relay
+## Relay
 After sending a relay message, the `-m message` is relayed `-to 1,2` the recipient client ids.
 
 Maximum number of recipients for relay messages is 255
 
 
-# Mockhub
+## Mockhub
 
 Mockhub is a minimal hub package used by the client's unit tests
