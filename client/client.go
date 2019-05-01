@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"strings"
 )
 
 // Exported global variables used for mocking values in unit tests
@@ -36,6 +37,7 @@ func startClient(ip, cmd, m, to string) error {
 			messageSent = true
 		}
 
+		readResponseFromHub(rw)
 	}
 }
 
@@ -84,7 +86,10 @@ func readResponseFromHub(rw *bufio.ReadWriter) (string, error) {
 		return "", err
 	}
 
-	log.Println("response from hub:", response)
+	if response != "" {
+		log.Println("response from hub:", response)
+	}
+
 	return response, nil
 }
 
@@ -97,8 +102,8 @@ func main() {
 	to := flag.String("to", "", "comma separated string of IDs (1,2,3) to relay message to, required param for RELAY")
 	flag.Parse()
 
-	fmt.Println(*m)
-	fmt.Println(*to)
+	*cmd = strings.ToUpper(*cmd)
+
 	err := startClient("localhost", *cmd, *m, *to)
 	if err != nil {
 		log.Println("Error:", err)

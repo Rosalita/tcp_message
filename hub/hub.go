@@ -6,6 +6,8 @@ import (
 	"log"
 	"net"
 	"os"
+	"sort"
+	"strconv"
 
 	"strings"
 	"sync"
@@ -15,8 +17,7 @@ type handlerFunc func(*bufio.ReadWriter)
 
 type endpoint struct {
 	listener       net.Listener
-	handler        map[string]handlerFunc
-	connectedUsers []uint64
+	connectedUsers map[uint64]*bufio.ReadWriter
 	nextID         uint64
 	m              sync.RWMutex
 }
@@ -61,17 +62,32 @@ func (e *endpoint) handleMessages(conn net.Conn) {
 
 	rw := bufio.NewReadWriter(bufio.NewReader(conn), bufio.NewWriter(conn))
 
-	e.routeMessage(rw)
+	userID := e.connectUser(rw)
+	e.routeMessage(userID)
 }
 
-func (e *endpoint) handleIdentity(rw *bufio.ReadWriter) {
-	log.Println("Handling identity message")
+func (e *endpoint) connectUser(rw *bufio.ReadWriter) (userID uint64) {
 
-	userID := e.nextID
-	e.connectedUsers = append(e.connectedUsers, userID)
+	userID = e.nextID
+
+	e.m.RLock()
+	e.connectedUsers[userID] = rw
+	e.m.RUnlock()
+
 	e.nextID++
 
-	response := fmt.Sprintf("%d\n", userID)
+	return userID
+
+}
+
+func (e *endpoint) handleIdentity(userID uint64) {
+	log.Println("Handling identity message")
+
+	e.m.RLock()
+	rw := e.connectedUsers[userID]
+	e.m.RUnlock()
+
+	response := fmt.Sprintf("Your identity is: %d\n", userID)
 
 	_, err := rw.WriteString(response)
 	if err != nil {
@@ -83,10 +99,30 @@ func (e *endpoint) handleIdentity(rw *bufio.ReadWriter) {
 	}
 }
 
-func (e *endpoint) handleList(rw *bufio.ReadWriter) {
+func (e *endpoint) handleList(userID uint64) {
 	log.Println("Handling list message")
 
-	response := fmt.Sprintf("%d\n", e.connectedUsers)
+	connectedUsers := []uint64{}
+
+	e.m.RLock()
+	rw := e.connectedUsers[userID]
+
+	for user := range e.connectedUsers {
+		if user == userID {
+			continue
+		}
+		connectedUsers = append(connectedUsers, user)
+	}
+	e.m.RUnlock()
+
+	sort.Slice(connectedUsers, func(i, j int) bool { return connectedUsers[i] < connectedUsers[j] })
+
+	response := ""
+	if len(connectedUsers) < 1 {
+		response = "no other users are connected"
+	} else {
+		response = fmt.Sprintf("The following user(s) are connected %d\n", connectedUsers)
+	}
 
 	_, err := rw.WriteString(response)
 	if err != nil {
@@ -98,15 +134,19 @@ func (e *endpoint) handleList(rw *bufio.ReadWriter) {
 	}
 }
 
-func (e *endpoint) handleRelay(rw *bufio.ReadWriter) {
+func (e *endpoint) handleRelay(senderID uint64) {
 	log.Println("Handling relay message")
 
-	m, err := rw.ReadString('\n')
+	e.m.RLock()
+	rw := e.connectedUsers[senderID]
+	e.m.RUnlock()
+
+	message, err := rw.ReadString('\n')
 	if err != nil {
 		log.Println("Cannot read from connection.\n", err)
 	}
-	m = strings.Trim(m, "\n ")
-	log.Printf("message received from client: %s\n", m)
+	message = strings.Trim(message, "\n ")
+	log.Printf("message received from client: %s\n", message)
 
 	to, err := rw.ReadString('\n')
 	if err != nil {
@@ -115,11 +155,54 @@ func (e *endpoint) handleRelay(rw *bufio.ReadWriter) {
 	to = strings.Trim(to, "\n ")
 	log.Printf("to IDs received from client: %s\n", to)
 
+	recipients := []uint64{}
+
+	ids := strings.Split(to, ",")
+	for _, id := range ids {
+		userID, err := strconv.ParseUint(id, 10, 64)
+
+		if err != nil {
+			log.Println(err)
+		}
+		recipients = append(recipients, userID)
+	}
+
+	if len(recipients) > 255 {
+		log.Println("too many message recipients, max 255")
+		return
+	}
+
+	for _, userID := range recipients {
+
+		e.m.RLock()
+		if e.connectedUsers[userID] == nil {
+			log.Printf("user %d is not connected", userID)
+			continue
+		}
+		rw := e.connectedUsers[userID]
+		e.m.RUnlock()
+
+		response := fmt.Sprintf("Message from %d : %s\n", senderID, message)
+
+		_, err := rw.WriteString(response)
+		if err != nil {
+			log.Println("Cannot write to connection.\n", err)
+		}
+		err = rw.Flush()
+		if err != nil {
+			log.Println("Flush failed.", err)
+		}
+	}
+
 }
 
-func (e *endpoint) routeMessage(rw *bufio.ReadWriter) {
+func (e *endpoint) routeMessage(userID uint64) {
 
 	TestMode = os.Getenv("TEST_MODE")
+
+	e.m.RLock()
+	rw := e.connectedUsers[userID]
+	e.m.RUnlock()
 
 	msgType, err := rw.ReadString('\n')
 
@@ -134,11 +217,11 @@ func (e *endpoint) routeMessage(rw *bufio.ReadWriter) {
 	if TestMode != "on" {
 		switch msgType {
 		case "IDENTITY":
-			e.handleIdentity(rw)
+			e.handleIdentity(userID)
 		case "LIST":
-			e.handleList(rw)
+			e.handleList(userID)
 		case "RELAY":
-			e.handleRelay(rw)
+			e.handleRelay(userID)
 		}
 	}
 
@@ -160,7 +243,8 @@ func main() {
 
 func newEndpoint() *endpoint {
 	return &endpoint{
-		nextID: uint64(1),
+		connectedUsers: make(map[uint64]*bufio.ReadWriter),
+		nextID:         uint64(1),
 	}
 }
 

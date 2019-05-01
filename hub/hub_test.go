@@ -4,8 +4,10 @@ import (
 	"bufio"
 	"bytes"
 	"flag"
+	"fmt"
 	"log"
 	"os"
+	"strconv"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -77,13 +79,31 @@ func TestRouteMessage(t *testing.T) {
 		rw.WriteString(test.msgType)
 		rw.Flush()
 
-		ep.routeMessage(rw)
+		ep.connectedUsers[uint64(1)] = rw
+
+		ep.routeMessage(uint64(1))
 		assert.Contains(t, logged.String(), test.logged)
 		logged.Reset()
 
 	}
 
 	UnsetTestMode()
+}
+
+func TestConnectUser(t *testing.T) {
+
+	var buffer bytes.Buffer
+	rw := bufio.NewReadWriter(bufio.NewReader(&buffer), bufio.NewWriter(&buffer))
+
+	ep := newEndpoint()
+
+	userID := ep.connectUser(rw)
+
+	assert.Equal(t, uint64(1), userID)
+	assert.Equal(t, 1, len(ep.connectedUsers))
+	assert.NotNil(t, ep.connectedUsers[uint64(1)])
+	assert.Equal(t, uint64(2), ep.nextID)
+
 }
 
 func TestHandleIdentity(t *testing.T) {
@@ -93,25 +113,26 @@ func TestHandleIdentity(t *testing.T) {
 
 	ep := newEndpoint()
 
-	ep.handleIdentity(rw)
+	ep.connectedUsers[uint64(1)] = rw
 
-	assert.Equal(t, 1, len(ep.connectedUsers))
-	assert.Equal(t, uint64(1), ep.connectedUsers[0])
-	assert.Equal(t, uint64(2), ep.nextID)
+	tests := []struct {
+		userID   uint64
+		response string
+	}{
+		{uint64(1), "Your identity is: 1\n"},
+		{uint64(2), "Your identity is: 2\n"},
+		{uint64(3), "Your identity is: 3\n"},
+	}
 
-	result := buffer.String()
-	assert.Equal(t, "1\n", result)
+	for _, test := range tests {
+		ep.connectedUsers[test.userID] = rw
 
-	buffer.Reset()
-	ep.handleIdentity(rw)
+		ep.handleIdentity(test.userID)
+		result := buffer.String()
+		assert.Equal(t, test.response, result)
 
-	assert.Equal(t, 2, len(ep.connectedUsers))
-	assert.Equal(t, uint64(1), ep.connectedUsers[0])
-	assert.Equal(t, uint64(2), ep.connectedUsers[1])
-	assert.Equal(t, uint64(3), ep.nextID)
-
-	result = buffer.String()
-	assert.Equal(t, "2\n", result)
+		buffer.Reset()
+	}
 
 }
 
@@ -120,39 +141,93 @@ func TestHandleList(t *testing.T) {
 	var buffer bytes.Buffer
 	rw := bufio.NewReadWriter(bufio.NewReader(&buffer), bufio.NewWriter(&buffer))
 
-	ep := newEndpoint()
-	ep.handleList(rw)
+	epOneConnection := newEndpoint()
+	epOneConnection.connectUser(rw)
 
-	result := buffer.String()
-	assert.Equal(t, "[]\n", result)
+	epTwoConnections := newEndpoint()
+	epTwoConnections.connectUser(rw)
+	epTwoConnections.connectUser(rw)
 
-	buffer.Reset()
-	ep.handleIdentity(rw)
-	buffer.Reset()
-	ep.handleList(rw)
+	epThreeConnections := newEndpoint()
+	epThreeConnections.connectUser(rw)
+	epThreeConnections.connectUser(rw)
+	epThreeConnections.connectUser(rw)
 
-	result = buffer.String()
-	assert.Equal(t, "[1]\n", result)
+	tests := []struct {
+		endpoint *endpoint
+		userID   uint64
+		response string
+	}{
+		{epOneConnection, uint64(1), "no other users are connected"},
+		{epTwoConnections, uint64(1), "The following user(s) are connected [2]\n"},
+		{epThreeConnections, uint64(2), "The following user(s) are connected [1 3]\n"},
+	}
 
-	buffer.Reset()
-	ep.handleIdentity(rw)
-	buffer.Reset()
-	ep.handleList(rw)
+	for _, test := range tests {
 
-	result = buffer.String()
-	assert.Equal(t, "[1 2]\n", result)
+		test.endpoint.handleList(test.userID)
+
+		result := buffer.String()
+		assert.Equal(t, test.response, result)
+
+		buffer.Reset()
+	}
 }
 
 func TestHandleRelay(t *testing.T) {
 
-	var buffer bytes.Buffer
-	rw := bufio.NewReadWriter(bufio.NewReader(&buffer), bufio.NewWriter(&buffer))
+	var buffer1 bytes.Buffer
+	rw1 := bufio.NewReadWriter(bufio.NewReader(&buffer1), bufio.NewWriter(&buffer1))
 
-	ep := newEndpoint()
-	ep.handleRelay(rw)
+	var buffer2 bytes.Buffer
+	rw2 := bufio.NewReadWriter(bufio.NewReader(&buffer2), bufio.NewWriter(&buffer2))
 
-	result := buffer.String()
-	assert.Equal(t, "", result)
+	var buffer3 bytes.Buffer
+	rw3 := bufio.NewReadWriter(bufio.NewReader(&buffer3), bufio.NewWriter(&buffer3))
+
+	epThreeConnections := newEndpoint()
+	epThreeConnections.connectUser(rw1)
+	epThreeConnections.connectUser(rw2)
+	epThreeConnections.connectUser(rw3)
+
+	tooManyRecipients := ""
+	for i := 1; i < 257; i++ {
+		tooManyRecipients += strconv.Itoa(i) + ","
+	}
+
+	tests := []struct {
+		endpoint *endpoint
+		senderID uint64
+		message  string
+		to       string
+		response string
+	}{
+		{epThreeConnections, uint64(3), "foo message", "1,2", "Message from 3 : foo message\n"},
+		{epThreeConnections, uint64(3), "bar message", tooManyRecipients, ""},
+	}
+
+	for _, test := range tests {
+
+		senderRw := test.endpoint.connectedUsers[test.senderID]
+		request := fmt.Sprintf("%s\n%s\n", test.message, test.to)
+		senderRw.WriteString(request)
+		senderRw.Flush()
+
+		test.endpoint.handleRelay(test.senderID)
+
+		user1result := buffer1.String()
+		assert.Equal(t, test.response, user1result)
+
+		user2result := buffer2.String()
+		assert.Equal(t, test.response, user2result)
+
+		user3result := buffer3.String()
+		assert.Equal(t, "", user3result)
+
+		buffer1.Reset()
+		buffer2.Reset()
+		buffer3.Reset()
+	}
 
 }
 
